@@ -18,6 +18,7 @@ package linode
 
 import (
 	"os"
+	"fmt"
 	"strconv"
 	"context"
 	"net/http"
@@ -30,33 +31,58 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
-	"k8s.io/autoscaler/cluster-autoscaler/config/dynamic"
 	klog "k8s.io/klog/v2"
 )
 
 // linodeCloudProvider implements CloudProvider interface.
 type linodeCloudProvider struct {
-	nodeGroups      []*NodeGroup
+	client          *linodego.Client
+	config          *linodeConfig
+	nodeGroups      map[string]*NodeGroup
 	resourceLimiter *cloudprovider.ResourceLimiter
 }
 
-// configGlobal is the global section of the config file for linode.
-type configGlobal struct {
-	clusterID string `gcfg:"lke-cluster-id"`
-	token     string `gcfg:"linode-token"`
+// nodeGroupConfig is the configuration if a specific node group as defined in the cloud config file.
+type nodeGroupConfig struct {
+	maxSize int
+	minSize int
 }
 
-// configNodeGroupDef is the section to define a node group in the config file for linode.
-type configNodeGroupDef struct {
-	linodeType     string `gcfg:"linode-type"`
-	importPoolIDs []string `gcfg:"import-pool-id"`
+// linodeConfig holds the configuration if the linode provider as defined in the cloud config file.
+type linodeConfig struct {
+	clusterID       int
+	token           string
+	defaultMinSize  int
+	defaultMaxSize  int
+	excludedPoolIDs map[int]bool
+	nodeGroupCfg  map[string]*nodeGroupConfig
 }
 
-// cloudConfig is the cloud config file for linode.
-type cloudConfig struct {
-	global        configGlobal                   `gcfg:"global"`
-	nodeGroupDefs map[string]*configNodeGroupDef `gcfg:"nodegroupdef"`
+// gcfgGlobalConfig is the gcfg representation of the global section in the config file for linode.
+type gcfgGlobalConfig struct {
+	clusterID       string `gcfg:"lke-cluster-id"`
+	token           string `gcfg:"linode-token"`
+	defaultMinSize  string `gcfg:"defaut-min-size-per-linode-type"`
+	defaultMaxSize  string `gcfg:"defaut-max-size-per-linode-type"`
+	excludedPoolIDs []string `gcfg:"do-not-import-pool-id"`
 }
+
+// gcfgNodeGroupConfig is the gcfg representation of the section in the cloud config file to change defaults for a node group.
+type gcfgNodeGroupConfig struct {
+	minSize string `gcfg:"min-size"`
+	maxSize string `gcfg:"max-size"`
+}
+
+// gcfgCloudConfig is the gcfg representation of the cloud config file for linode.
+type gcfgCloudConfig struct {
+	global     gcfgGlobalConfig                `gcfg:"global"`
+	nodeGroups map[string]*gcfgNodeGroupConfig `gcfg:"nodegroup"`
+}
+
+const (
+	DefaultMinSizePerLinodeType int = 1
+	DefaultMaxSizePerLinodeType int = 200
+)
 
 func (l *linodeCloudProvider) Name() string {
 	return cloudprovider.LinodeProviderName
@@ -128,12 +154,6 @@ func (l *linodeCloudProvider) Cleanup() error {
 	return nil
 }
 
-// Refresh is called before every main loop and can be used to dynamically update cloud provider state.
-// In particular the list of node groups returned by NodeGroups can change as a result of CloudProvider.Refresh().
-func (l *linodeCloudProvider) Refresh() error {
-	return nil
-}
-
 // BuildLinode builds the BuildLinode cloud provider.
 func BuildLinode(
 	opts config.AutoscalingOptions,
@@ -141,42 +161,152 @@ func BuildLinode(
 	rl *cloudprovider.ResourceLimiter,
 ) cloudprovider.CloudProvider {
 
-	cloudConfig := buildCloudConfig(opts.CloudConfig)
-	linodeClient := buildLinodeClient(cloudConfig.global.token)
-	clusterID, err := strconv.Atoi(cloudConfig.global.clusterID)
-	if err != nil {
-		klog.Fatalf("Failed to read configuration file %q: LKEClusterID %q is not a number, %v",
-			opts.CloudConfig, cloudConfig.global.clusterID, err)
+	// the cloud provider automatically uses all node pools in linode.
+	// This means we don't use the cloudprovider.NodeGroupDiscoveryOptions
+	// flags (which can be set via '--node-group-auto-discovery' or '-nodes')
 
-	}
-	nodeGroups := buildNodeGroups(linodeClient, clusterID, cloudConfig, do.NodeGroupSpecs)
-	return &linodeCloudProvider {
-		nodeGroups: nodeGroups,
+	cfg := buildCloudConfig(opts.CloudConfig)
+	client := buildLinodeClient(cfg.token)
+	lcp := &linodeCloudProvider {
+		client: client,
+		config: cfg,
+		nodeGroups: make(map[string]*NodeGroup),
 		resourceLimiter: rl,
 	}
+	err := lcp.Refresh()
+	if err != nil {
+		klog.Infof("Error on first import of LKE node pools: %v", err)
+	}
+	klog.Infof("First import of existing LKE node pools ended")
+	if len(lcp.nodeGroups) == 0 {
+		klog.Infof("Could not import any LKE node pool in any node group")
+	} else {
+		klog.Infof("imported LKE node pools:")
+		for _, ng := range lcp.nodeGroups {
+			klog.Infof("%s", ng.extendedDebug())
+		}
+	}
+	return lcp
 }
 
-func buildCloudConfig(configFilePath string) *cloudConfig {
+func buildCloudConfig(configFilePath string) *linodeConfig {
+
+	// read the config file and get the gcfg struct
 	if configFilePath == "" {
 		klog.Fatalf("No config file provided, please specify it via the --cloud-config flag")
 	}
 	configFile, err := os.Open(configFilePath)
 	if err != nil {
-		klog.Fatalf("Could not open cloud provider configuration file %q: %v", configFilePath, err)
+		klog.Fatalf("Could not open cloud provider configuration file %q, error: %v", configFilePath, err)
 	}
 	defer configFile.Close()
-	var cfg cloudConfig
-	if err := gcfg.ReadInto(&cfg, configFile); err != nil {
-		klog.Fatalf("Failed to read configuration file: %q, error: %v", configFilePath, err)
+	var gcfgCloudConfig gcfgCloudConfig
+	if err := gcfg.ReadInto(&gcfgCloudConfig, configFile); err != nil {
+		klog.Fatalf("Failed to parse configuration file %q, error: %v", configFilePath, err)
 	}
-	// validation of global section
-	if len(cfg.global.clusterID) == 0 {
-		klog.Fatalf("Failed to read configuration file: %q, error: cannot read LKE cluster id config value", configFilePath)
+
+	// get the clusterID
+	clusterID, err := strconv.Atoi(gcfgCloudConfig.global.clusterID)
+	if err != nil {
+		klog.Fatalf("Failed to parse configuration file, error: LKE Cluster ID %q is not a number, %v",
+			gcfgCloudConfig.global.clusterID, err)
 	}
-	if len(cfg.global.token) == 0 {
-		klog.Fatalf("Failed to read configuration file: %q, error: cannot read linode token config value", configFilePath)
+
+	// get the defaultMinSize
+	defaultMinSize := DefaultMinSizePerLinodeType
+	if len(gcfgCloudConfig.global.defaultMinSize) != 0 {
+		defaultMinSize, err = strconv.Atoi(gcfgCloudConfig.global.defaultMinSize)
+		if err != nil {
+			klog.Fatalf("Failed to parse configuration file %q, error: cannot convertthe defined default min size (%q) to int in the global section: %v",
+				configFilePath, gcfgCloudConfig.global.defaultMinSize, err)
+		}
+		if defaultMinSize < 1 {
+			klog.Fatalf("Failed to parse configuration file %q, error: default min size must be >= 1 (defined in the global section: %d)",
+				configFilePath, defaultMinSize)
+		}
 	}
-	return &cfg
+
+	// get the defaultMaxSize
+	defaultMaxSize := DefaultMaxSizePerLinodeType
+	if len(gcfgCloudConfig.global.defaultMaxSize) != 0 {
+		defaultMaxSize, err = strconv.Atoi(gcfgCloudConfig.global.defaultMaxSize)
+		if err != nil {
+			klog.Fatalf("Failed to parse configuration file %q, error: cannot convert the defined default max size (%q) to int in the global section: %v",
+				configFilePath, gcfgCloudConfig.global.defaultMaxSize, err)
+		}
+	}
+
+	// validate the size limits
+	if defaultMaxSize <= defaultMinSize {
+		klog.Fatalf("Failed to parse configuration file %q, error: default min size must be strictly less than default max size (minSize: %d, maxSize %d)",
+			configFilePath, defaultMinSize, defaultMaxSize)
+	}
+
+	// get the linode token
+	token := gcfgCloudConfig.global.token
+	if len(gcfgCloudConfig.global.token) == 0 {
+		klog.Fatalf("Failed to parse configuration file %q, error: linode token not present in global section", configFilePath)
+	}
+
+	// get the list of LKE pools that must not be imported
+	excludedPoolIDs := make(map[int]bool)
+	for _, excludedPoolIDStr := range gcfgCloudConfig.global.excludedPoolIDs {
+		excludedPoolID, err := strconv.Atoi(excludedPoolIDStr)
+		if err != nil {
+			klog.Fatalf("Failed to parse configuration file %q, error: cannot convert excluded pool id %q to int", configFilePath, excludedPoolIDStr)
+		}
+		excludedPoolIDs[excludedPoolID] = true
+	}
+
+	// get the specific configuration of a node group
+	nodeGroupCfg := make(map[string]*nodeGroupConfig)
+	for nodeType, gcfgNodeGroup := range gcfgCloudConfig.nodeGroups {
+		minSize := defaultMinSize
+		maxSize := defaultMaxSize
+		minSizeStr := gcfgNodeGroup.minSize
+		if len(minSizeStr) != 0 {
+			nodeGroupMinSize, err := strconv.Atoi(minSizeStr)
+			if err != nil {
+				klog.Fatalf("Failed to parse configuration file %q, error: could not parse min size for node group %q, %v",
+					configFilePath, nodeType, err)
+			} else {
+				minSize = nodeGroupMinSize
+			}
+			if minSize < 1 {
+				klog.Fatalf("Failed to parse configuration file %q, error: min size must be >= 1 (value defined in the node group section %q: %d)",
+					configFilePath, nodeType, minSize)
+			}
+		}
+		maxSizeStr := gcfgNodeGroup.maxSize
+		if len(maxSizeStr) != 0 {
+			nodeGroupMaxSize, err := strconv.Atoi(maxSizeStr)
+			if err != nil {
+				klog.Fatalf("Failed to parse configuration file %q, error: could not parse max size for node group %q, %v",
+					configFilePath, nodeType, err)
+			} else {
+				maxSize = nodeGroupMaxSize
+			}
+		}
+		if !(minSize < maxSize) {
+			klog.Fatalf("Failed to parse configuration file %q, error: min size for a node group must be strictly less than max size (value defined minSize: %d, maxSize %d)",
+				configFilePath, minSize, maxSize)
+		}
+		ngc := &nodeGroupConfig {
+			maxSize: maxSize,
+			minSize: minSize,
+		}
+		nodeGroupCfg[nodeType] = ngc
+	}
+
+	cfg := &linodeConfig {
+		clusterID: clusterID,
+		token: token,
+		defaultMinSize: defaultMinSize,
+		defaultMaxSize: defaultMaxSize,
+		excludedPoolIDs: excludedPoolIDs,
+		nodeGroupCfg: nodeGroupCfg,
+	}
+	return cfg
 }
 
 func buildLinodeClient(linodeToken string) *linodego.Client {
@@ -191,91 +321,65 @@ func buildLinodeClient(linodeToken string) *linodego.Client {
 	return &client
 }
 
-func buildNodeGroups(client *linodego.Client, clusterID int, config *cloudConfig, nodeGroupSpecs []string) []*NodeGroup {
-	if len(nodeGroupSpecs) == 0 {
-		klog.Fatalf("Must specify at least one node group with --nodes=<min>:<max>:<node group name>")
+// Refresh is called before every main loop and can be used to dynamically update cloud provider state.
+// In particular the list of node groups returned by NodeGroups can change as a result of CloudProvider.Refresh().
+func (l *linodeCloudProvider) Refresh() error {
+	nodeGroups := make(map[string]*NodeGroup)
+	lkeClusterPools, err := l.client.ListLKEClusterPools(context.Background(), l.config.clusterID, nil)
+	if err != nil {
+		return fmt.Errorf("Failed to get list of LKE pools from linode API: %v", err)
 	}
-	nodeGroups := make([]*NodeGroup, 0)
-	for _, nodeGroupSpec := range nodeGroupSpecs {
-		ng := buildNodeGroup(client, clusterID, config, nodeGroupSpec)
-		nodeGroups = append(nodeGroups, ng)
+	for pool := range lkeClusterPools {
+		//skip this pool if it is among the ones to be excluded as defined in the config file
+		_, found := l.config.excludedPoolIDs[pool]; if found {
+			continue
+		}
+		//check if the nodes in the pool are more than 1, if so skip it
+		if pool.Count > 1 {
+			klog.Infof("The LKE pool %d has more than one node (current nodes in pool: %d), will exclude it from the node groups",
+				pool.ID, pool.Count)
+			continue
+		}
+		// add pool to the node groups map
+		linodeType := pool.Type
+		// if a node group for the node type of this pool already exists, add it to the related node group
+		nodeGroup, found := nodeGroups[linodeType] ; if found {
+			nodeGroup.addLKEPool(pool)
+			//TODO better to skip it or add it anyway?
+			currentSize := len(nodeGroup.lkePools)
+			if currentSize > nodeGroup.maxSize {
+				klog.Infof("warning: imported node pools in node group %q are > maxSize (current size: %d, max size: %d)",
+					nodeGroup.id, currentSize, nodeGroup.maxSize)
+			}
+		} else { // else create a new node group with this pool in it
+			ng := newNodeGroup(pool, l.config, l.client)
+			nodeGroups[linodeType] = ng
+		}	
 	}
-	return nodeGroups
+	l.nodeGroups = nodeGroups
+	return nil
 }
 
-func buildNodeGroup(client *linodego.Client, clusterID int, config *cloudConfig, nodeGroupSpec string) *NodeGroup {
-	spec, err := dynamic.SpecFromString(nodeGroupSpec, false)
-	if err != nil {
-		klog.Fatalf("Could not parse node group spec %s: %v", nodeGroupSpec, err)
+func newNodeGroup(pool *linodego.LKEClusterPool, cfg *linodeConfig, client *linodego.Client) *NodeGroup {
+	// get specific min and max size for a node group, if defined in the config file
+	minSize := cfg.defaultMinSize
+	maxSize := cfg.defaultMaxSize
+	nodeGroupCfg, found := cfg.nodeGroupCfg[pool.Type]; if found {
+		minSize = nodeGroupCfg.minSize
+		maxSize = nodeGroupCfg.maxSize
 	}
-	if err := spec.Validate(); err != nil {
-		klog.Fatalf("Could not parse node group spec %s, error on validating spec: %v", nodeGroupSpec, err)
-	}
-	nodeGroupName, minSize, maxSize := spec.Name, spec.MinSize, spec.MaxSize
-	nodeGroupCfg, ok := config.nodeGroupDefs[nodeGroupName]
-	if !ok {
-		klog.Fatalf("Node group name %q defined in --nodes not found in cloud config file, please define it using the [nodegroupdef <node group name>] section", spec.Name)
-	}
-	linodeType := nodeGroupCfg.linodeType
-	if len(linodeType) == 0 {
-		klog.Fatalf("Could not find linode-type field in nodegroupdef %q", nodeGroupName)
-	}
-	poolOpts := linodego.LKEClusterPoolCreateOptions {
-		Count: 1,
-		Type: linodeType,
-		//Disks []LKEClusterPoolDisk `json:"disks"` ? TODO bonf
-	}
-	lkePools := make(map[int] linodego.LKEClusterPool)
-	// try to import already existing LKE pools as defined in the cloud config file
-	for _, poolIDStr := range nodeGroupCfg.importPoolIDs {
-		poolID, err := strconv.Atoi(poolIDStr)
-		if err != nil {
-			klog.Errorf("Failed to import LKE pool %q to node group %q, cannot convert %q to int",
-				poolIDStr, nodeGroupName)
-			continue
-		}
-		lkePool, err := client.GetLKEClusterPool(context.Background(), clusterID, poolID)
-		if err != nil {
-			klog.Errorf("Failed to import LKE pool %d to node group %q, error on getting LKE pool from linode API: %v",
-				poolID, nodeGroupName, err)
-			continue
-		}
-		if lkePool.Count != 1 {
-			klog.Errorf("Failed to import LKE pool %d to node group %q, pool size is %d but must be exactly 1 to be imported in cluster-autoscaler",
-				poolID, nodeGroupName, lkePool.Count)
-			continue
-		}
-		if lkePool.Type != poolOpts.Type {
-			klog.Errorf("Failed to import LKE pool %d to node group %q, node type of pool is different from the one defined for the node group (%q vs %q)",
-				poolID, nodeGroupName, lkePool.Type, poolOpts.Type)
-			continue
-		}
-		if len(lkePools) > maxSize {
-			klog.Errorf("Cannot import LKE pool %d to node group %q, node group size is already maxed out (max size: %d)",
-				poolID, nodeGroupName, maxSize)
-			continue
-		}
-		klog.Infof("LKE pool %d (in LKE Cluster %d) correctly imported to node group %q",
-			poolID, clusterID, nodeGroupName)
-		lkePools[poolID] = lkePool
-	}
+	// create the new node group with this single LKE pool inside
+	lkePools := make(map[int]*linodego.LKEClusterPool)
+	lkePools[pool.ID] = pool
+	poolOpts := pool.GetCreateOptions()
 	ng := &NodeGroup {
 		client: client,
 		lkePools: lkePools,
-		prototypePool: poolOpts,
-		lkeClusterID: clusterID,
+		poolOpts: poolOpts,
+		lkeClusterID: cfg.clusterID,
 		minSize: minSize,
 		maxSize: maxSize,
-		id: nodeGroupName,
-	}
-	currentSize := len(ng.lkePools)
-	if currentSize < minSize {
-		klog.Infof("Current size of node group %q is less than minSize (current: %d < min: %d), adding nodes...",
-			nodeGroupName, currentSize, minSize)
-		delta := minSize - currentSize
-		if err := ng.IncreaseSize(delta); err != nil {
-			klog.Errorf("failed to create LKE pools for node group %q to reach the minSize: %v", nodeGroupName, err)
-		}
+		id: pool.Type,
 	}
 	return ng
 }

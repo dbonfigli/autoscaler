@@ -45,7 +45,7 @@ const (
 type NodeGroup struct {
 	client        *linodego.Client
 	lkePools      map[int]*linodego.LKEClusterPool //key: LKEClusterPool.ID
-	prototypePool linodego.LKEClusterPoolCreateOptions
+	poolOpts     linodego.LKEClusterPoolCreateOptions
 	lkeClusterID  int
 	minSize       int
 	maxSize       int
@@ -87,7 +87,7 @@ func (n *NodeGroup) IncreaseSize(delta int) error {
 	}
 
 	for i:=0; i<delta; i++ {
-		err := n.addLKEPool()
+		err := n.addNewLKEPool()
 		if err != nil {
 			return err
 		} 
@@ -160,6 +160,11 @@ func (n *NodeGroup) Debug() string {
 	return fmt.Sprintf("node group ID: %q (min:%d max:%d)", n.Id(), n.MinSize(), n.MaxSize())
 }
 
+// extendendDebug returns a string containing detailed information regarding this node group.
+func (n *NodeGroup) extendedDebug() string {
+	return fmt.Sprintf("node group debug info: %+v", n)
+}
+
 // Nodes returns a list of all nodes that belong to this node group. It is
 // required that Instance objects returned by this method have Id field set.
 // Other fields are optional.
@@ -212,14 +217,18 @@ func (n *NodeGroup) Autoprovisioned() bool {
 	return false
 }
 
-func (n *NodeGroup) addLKEPool() error {
+func (n *NodeGroup) addNewLKEPool() error {
 	ctx := context.Background()
-	newPool, err := n.client.CreateLKEClusterPool(ctx, n.lkeClusterID, n.prototypePool)
+	newPool, err := n.client.CreateLKEClusterPool(ctx, n.lkeClusterID, n.poolOpts)
 	if err != nil {
 		return fmt.Errorf("error on creating new LKE pool for LKE clusterID: %d", n.lkeClusterID)
 	}
 	n.lkePools[newPool.ID] = newPool
 	return nil
+}
+
+func (n *NodeGroup) addLKEPool(pool *linodego.LKEClusterPool) {
+	n.lkePools[pool.ID] = pool
 }
 
 func (n *NodeGroup) deleteLKEPool(id int) error {
