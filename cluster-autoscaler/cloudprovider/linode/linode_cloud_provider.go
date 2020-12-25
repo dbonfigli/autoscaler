@@ -80,8 +80,8 @@ type gcfgCloudConfig struct {
 }
 
 const (
-	DefaultMinSizePerLinodeType int = 1
-	DefaultMaxSizePerLinodeType int = 200
+	defaultMinSizePerLinodeType int = 1
+	defaultMaxSizePerLinodeType int = 200
 )
 
 func (l *linodeCloudProvider) Name() string {
@@ -213,7 +213,7 @@ func buildCloudConfig(configFilePath string) *linodeConfig {
 	}
 
 	// get the defaultMinSize
-	defaultMinSize := DefaultMinSizePerLinodeType
+	defaultMinSize := defaultMinSizePerLinodeType
 	if len(gcfgCloudConfig.global.defaultMinSize) != 0 {
 		defaultMinSize, err = strconv.Atoi(gcfgCloudConfig.global.defaultMinSize)
 		if err != nil {
@@ -227,7 +227,7 @@ func buildCloudConfig(configFilePath string) *linodeConfig {
 	}
 
 	// get the defaultMaxSize
-	defaultMaxSize := DefaultMaxSizePerLinodeType
+	defaultMaxSize := defaultMaxSizePerLinodeType
 	if len(gcfgCloudConfig.global.defaultMaxSize) != 0 {
 		defaultMaxSize, err = strconv.Atoi(gcfgCloudConfig.global.defaultMaxSize)
 		if err != nil {
@@ -317,7 +317,7 @@ func buildLinodeClient(linodeToken string) *linodego.Client {
 		},
 	}
 	client := linodego.NewClient(oauth2Client)
-	client.SetDebug(true) // TODO bonf set flag here
+	client.SetDebug(true) // TODO set flag here
 	return &client
 }
 
