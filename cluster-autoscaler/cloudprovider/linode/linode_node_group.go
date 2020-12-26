@@ -18,6 +18,7 @@ package linode
 
 import (
 	"fmt"
+	"strings"
 	"strconv"
 	"context"
 
@@ -26,11 +27,15 @@ import (
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
+
+	klog "k8s.io/klog/v2"
+	
 )
 
 const (
 	lkeLabelNamespace = "lke.linode.com"
 	poolIDLabel       = lkeLabelNamespace + "/pool-id"
+	providerIDPrefix  = "linode://"
 )
 
 // NodeGroup implements cloudprovider.NodeGroup interface. NodeGroup contains
@@ -102,20 +107,20 @@ func (n *NodeGroup) IncreaseSize(delta int) error {
 // until node group size is updated. Implementation required.
 func (n *NodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 	for _, node := range nodes {
-
-		poolID, err := nodeToLKEPoolID(node)
+		pool, err := n.findLKEPoolForNode(node)
 		if err != nil {
-			return fmt.Errorf("cannot delete node %q with provider ID %q: %v",
-				node.Name, node.Spec.ProviderID, err)
+			return err
 		}
-
-		err = n.deleteLKEPool(poolID)
+		if pool == nil {
+			return fmt.Errorf("Failed to delete node %q with provider ID %q: cannot find this node in the node group",
+				node.Name, node.Spec.ProviderID)
+		}
+		err = n.deleteLKEPool(pool.ID)
 		if err != nil {
-			return fmt.Errorf("cannot delete node %q with provider ID %q: %v",
+			return fmt.Errorf("Failed to delete node %q with provider ID %q: %v",
 			node.Name, node.Spec.ProviderID, err)
 		}
 	}
-
 	return nil
 }
 
@@ -157,26 +162,42 @@ func (n *NodeGroup) Id() string {
 
 // Debug returns a string containing all information regarding this node group.
 func (n *NodeGroup) Debug() string {
-	return fmt.Sprintf("node group ID: %q (min:%d max:%d)", n.Id(), n.MinSize(), n.MaxSize())
+	return fmt.Sprintf("node group ID: %s (min:%d max:%d)", n.Id(), n.MinSize(), n.MaxSize())
 }
 
 // extendendDebug returns a string containing detailed information regarding this node group.
 func (n *NodeGroup) extendedDebug() string {
-	return fmt.Sprintf("node group debug info: %+v", n)
+	lkePoolsStr := "{"
+	for _, p := range n.lkePools {
+		linodes := "["
+		for _, l := range p.Linodes {
+			linodes += fmt.Sprintf("ID: %s, instanceID: %d", l.ID, l.InstanceID)
+		}
+		linodes += "]"
+		lkePoolsStr += fmt.Sprintf("poolID: %d, count: %d, type: %s, associated linodes: [%s]",
+			p.ID, p.Count, p.Type, linodes)
+	}
+	lkePoolsStr += "}"
+	return fmt.Sprintf("node group ID: %s (min: %d, max: %d, LKEClusterID: %d, poolOpts: %+v, associated LKE pools: %s)",
+		n.id, n.minSize, n.maxSize, n.lkeClusterID, n.poolOpts, lkePoolsStr)
 }
 
 // Nodes returns a list of all nodes that belong to this node group. It is
 // required that Instance objects returned by this method have Id field set.
 // Other fields are optional.
 func (n *NodeGroup) Nodes() ([]cloudprovider.Instance, error) {
-	
-	nodes := make([]cloudprovider.Instance, len(n.lkePools))
-	i := 0
-	for id := range n.lkePools {
-		nodes[i] = cloudprovider.Instance{Id: strconv.Itoa(id)}
-		i++
+	nodes := make([]cloudprovider.Instance, 0)
+	for _, pool := range n.lkePools {
+		linodesCount := len(pool.Linodes); if linodesCount != 1 {
+			klog.Warningf("Number of linodes in LKE pool %d is not exactly 1 (count: %d)", pool.ID, linodesCount)
+		}
+		for _, linode := range pool.Linodes {
+			instance := cloudprovider.Instance{
+				Id: "linode://" + strconv.Itoa(linode.InstanceID),
+			}
+			nodes = append(nodes, instance)
+		}
 	}
-
 	return nodes, nil
 }
 
@@ -227,10 +248,6 @@ func (n *NodeGroup) addNewLKEPool() error {
 	return nil
 }
 
-func (n *NodeGroup) addLKEPool(pool *linodego.LKEClusterPool) {
-	n.lkePools[pool.ID] = pool
-}
-
 func (n *NodeGroup) deleteLKEPool(id int) error {
 	_, ok := n.lkePools[id]
 	if !ok {
@@ -245,17 +262,21 @@ func (n *NodeGroup) deleteLKEPool(id int) error {
 	return nil
 }
 
-// nodeToLKEPoolID return the LKE pool of an apiv1.Node node, or error if it cannot find one
-func nodeToLKEPoolID(node *apiv1.Node) (int, error) {
-	poolIDstring, ok := node.Labels[poolIDLabel]
-	if !ok {
-		return 0, fmt.Errorf("cannot find LKE pool for node %q with provider ID %q: LKE pool ID label %q is missing",
-			node.Name, node.Spec.ProviderID, poolIDLabel)
-	}
-	poolID, err := strconv.Atoi(poolIDstring)
+// findLKEPoolForNode return the LKE pool where this node is, nil otherwise
+func (n *NodeGroup) findLKEPoolForNode(node *apiv1.Node) (*linodego.LKEClusterPool, error) {
+	providerID := node.Spec.ProviderID
+	instanceIDStr := strings.TrimPrefix(providerID, providerIDPrefix)
+	instanceID, err := strconv.Atoi(instanceIDStr)
 	if err != nil {
-		return 0, fmt.Errorf("cannot find LKE pool for node %q with provider ID %q: cannot convert LKE pool ID label to int, %v",
-		node.Name, node.Spec.ProviderID, poolIDstring)
+		return nil, fmt.Errorf("Cannot convert ProviderID %q to linode istance id (must be of type %s<integer>)",
+			providerID, providerIDPrefix)
 	}
-	return poolID, nil
+	for _, pool := range n.lkePools {
+		for _, linode := range pool.Linodes {
+			if linode.InstanceID == instanceID {
+				return pool, nil
+			}
+		}
+	}
+	return nil, nil
 }
