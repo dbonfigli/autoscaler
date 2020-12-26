@@ -329,9 +329,9 @@ func (l *linodeCloudProvider) Refresh() error {
 	if err != nil {
 		return fmt.Errorf("Failed to get list of LKE pools from linode API: %v", err)
 	}
-	for pool := range lkeClusterPools {
+	for _, pool := range lkeClusterPools {
 		//skip this pool if it is among the ones to be excluded as defined in the config file
-		_, found := l.config.excludedPoolIDs[pool]; if found {
+		_, found := l.config.excludedPoolIDs[pool.ID]; if found {
 			continue
 		}
 		//check if the nodes in the pool are more than 1, if so skip it
@@ -344,7 +344,7 @@ func (l *linodeCloudProvider) Refresh() error {
 		linodeType := pool.Type
 		// if a node group for the node type of this pool already exists, add it to the related node group
 		nodeGroup, found := nodeGroups[linodeType] ; if found {
-			nodeGroup.addLKEPool(pool)
+			nodeGroup.addLKEPool(&pool)
 			//TODO better to skip it or add it anyway?
 			currentSize := len(nodeGroup.lkePools)
 			if currentSize > nodeGroup.maxSize {
@@ -352,7 +352,7 @@ func (l *linodeCloudProvider) Refresh() error {
 					nodeGroup.id, currentSize, nodeGroup.maxSize)
 			}
 		} else { // else create a new node group with this pool in it
-			ng := newNodeGroup(pool, l.config, l.client)
+			ng := newNodeGroup(&pool, l.config, l.client)
 			nodeGroups[linodeType] = ng
 		}	
 	}

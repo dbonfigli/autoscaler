@@ -254,7 +254,7 @@ func nodeToLKEPoolID(node *apiv1.Node) (int, error) {
 	}
 	poolID, err := strconv.Atoi(poolIDstring)
 	if err != nil {
-		return 0, fmt.Errorf("cannot find LKE pool for node %q with provider ID %q: cannot convert LKE pool ID label to int",
+		return 0, fmt.Errorf("cannot find LKE pool for node %q with provider ID %q: cannot convert LKE pool ID label to int, %v",
 		node.Name, node.Spec.ProviderID, poolIDstring)
 	}
 	return poolID, nil
