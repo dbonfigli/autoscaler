@@ -17,25 +17,20 @@ limitations under the License.
 package linode
 
 import (
-	"fmt"
-	"strings"
-	"strconv"
 	"context"
+	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/linode/linodego"
 	apiv1 "k8s.io/api/core/v1"
-
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
-
 	klog "k8s.io/klog/v2"
-	
 )
 
 const (
-	lkeLabelNamespace = "lke.linode.com"
-	poolIDLabel       = lkeLabelNamespace + "/pool-id"
-	providerIDPrefix  = "linode://"
+	providerIDPrefix = "linode://"
 )
 
 // NodeGroup implements cloudprovider.NodeGroup interface. NodeGroup contains
@@ -48,13 +43,13 @@ const (
 // We cannot use an LKE pool as node group since LKE does not provide a way to
 // delete a specific linnode in a pool.
 type NodeGroup struct {
-	client        *linodego.Client
-	lkePools      map[int]*linodego.LKEClusterPool //key: LKEClusterPool.ID
+	client       linodeAPIClient
+	lkePools     map[int]*linodego.LKEClusterPool //key: LKEClusterPool.ID
 	poolOpts     linodego.LKEClusterPoolCreateOptions
-	lkeClusterID  int
-	minSize       int
-	maxSize       int
-	id            string
+	lkeClusterID int
+	minSize      int
+	maxSize      int
+	id           string
 }
 
 // MaxSize returns maximum size of the node group.
@@ -91,11 +86,11 @@ func (n *NodeGroup) IncreaseSize(delta int) error {
 			currentSize, targetSize, n.MaxSize())
 	}
 
-	for i:=0; i<delta; i++ {
+	for i := 0; i < delta; i++ {
 		err := n.addNewLKEPool()
 		if err != nil {
 			return err
-		} 
+		}
 	}
 
 	return nil
@@ -118,7 +113,7 @@ func (n *NodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 		err = n.deleteLKEPool(pool.ID)
 		if err != nil {
 			return fmt.Errorf("Failed to delete node %q with provider ID %q: %v",
-			node.Name, node.Spec.ProviderID, err)
+				node.Name, node.Spec.ProviderID, err)
 		}
 	}
 	return nil
@@ -130,29 +125,9 @@ func (n *NodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 // It is assumed that cloud provider will not delete the existing nodes when there
 // is an option to just decrease the target. Implementation required.
 func (n *NodeGroup) DecreaseTargetSize(delta int) error {
-	if delta >= 0 {
-		return fmt.Errorf("delta must be negative, have: %d", delta)
-	}
-
-	currentSize := len(n.lkePools)
-	targetSize := currentSize + delta
-	if targetSize < n.MinSize() {
-		return fmt.Errorf("size decrease is too small. current: %d desired: %d min: %d",
-			currentSize, targetSize, n.MinSize())
-	}
-
-	for id := range n.lkePools {
-		err := n.deleteLKEPool(id)
-		if err != nil {
-			return err
-		}
-		delta--
-		if delta <= 0 {
-			break
-		}
-	}
-
-	return nil
+	// requests for new nodes are always fulfilled so we cannot
+	// decrease the size without actually deleting nodes
+	return cloudprovider.ErrNotImplemented
 }
 
 // Id returns an unique identifier of the node group.
@@ -167,19 +142,21 @@ func (n *NodeGroup) Debug() string {
 
 // extendendDebug returns a string containing detailed information regarding this node group.
 func (n *NodeGroup) extendedDebug() string {
-	lkePoolsStr := "{"
+	lkePoolsList := make([]string, 0)
 	for _, p := range n.lkePools {
-		linodes := "["
+		linodesList := make([]string, 0)
 		for _, l := range p.Linodes {
-			linodes += fmt.Sprintf("ID: %s, instanceID: %d", l.ID, l.InstanceID)
+			linode := fmt.Sprintf("ID: %q, instanceID: %d", l.ID, l.InstanceID)
+			linodesList = append(linodesList, linode)
 		}
-		linodes += "]"
-		lkePoolsStr += fmt.Sprintf("poolID: %d, count: %d, type: %s, associated linodes: [%s]",
+		linodes := strings.Join(linodesList, "; ")
+		lkePool := fmt.Sprintf("{ poolID: %d, count: %d, type: %s, associated linodes: [%s] }",
 			p.ID, p.Count, p.Type, linodes)
+		lkePoolsList = append(lkePoolsList, lkePool)
 	}
-	lkePoolsStr += "}"
-	return fmt.Sprintf("node group ID: %s (min: %d, max: %d, LKEClusterID: %d, poolOpts: %+v, associated LKE pools: %s)",
-		n.id, n.minSize, n.maxSize, n.lkeClusterID, n.poolOpts, lkePoolsStr)
+	lkePools := strings.Join(lkePoolsList, ", ")
+	return fmt.Sprintf("node group ID %s := min: %d, max: %d, LKEClusterID: %d, poolOpts: %+v, associated LKE pools: %s",
+		n.id, n.minSize, n.maxSize, n.lkeClusterID, n.poolOpts, lkePools)
 }
 
 // Nodes returns a list of all nodes that belong to this node group. It is
@@ -188,8 +165,9 @@ func (n *NodeGroup) extendedDebug() string {
 func (n *NodeGroup) Nodes() ([]cloudprovider.Instance, error) {
 	nodes := make([]cloudprovider.Instance, 0)
 	for _, pool := range n.lkePools {
-		linodesCount := len(pool.Linodes); if linodesCount != 1 {
-			klog.Warningf("Number of linodes in LKE pool %d is not exactly 1 (count: %d)", pool.ID, linodesCount)
+		linodesCount := len(pool.Linodes)
+		if linodesCount != 1 {
+			klog.V(6).Infof("Number of linodes in LKE pool %d is not exactly 1 (count: %d)", pool.ID, linodesCount)
 		}
 		for _, linode := range pool.Linodes {
 			instance := cloudprovider.Instance{
