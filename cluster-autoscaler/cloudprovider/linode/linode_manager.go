@@ -60,7 +60,7 @@ func (m *manager) refresh() error {
 		}
 		// check if the nodes in the pool are more than 1, if so skip it
 		if pool.Count > 1 {
-			klog.V(6).Infof("The LKE pool %d has more than one node (current nodes in pool: %d), will exclude it from the node groups",
+			klog.V(2).Infof("The LKE pool %d has more than one node (current nodes in pool: %d), will exclude it from the node groups",
 				pool.ID, pool.Count)
 			continue
 		}
@@ -79,19 +79,19 @@ func (m *manager) refresh() error {
 	}
 
 	// show some debug info
-	klog.V(6).Infof("LKE node group after refresh:")
+	klog.V(2).Infof("LKE node group after refresh:")
 	for _, ng := range nodeGroups {
-		klog.Infof("%s", ng.extendedDebug())
+		klog.V(2).Infof("%s", ng.extendedDebug())
 	}
 	for _, ng := range nodeGroups {
 		currentSize := len(ng.lkePools)
 		if currentSize > ng.maxSize {
-			klog.V(6).Infof("imported node pools in node group %q are > maxSize (current size: %d, max size: %d)",
-				ng.id, currentSize, ng.maxSize)
+			klog.V(2).Infof("imported node pools in node group %q are > maxSize (current size: %d, min size: %d, max size: %d)",
+				ng.id, currentSize, ng.minSize, ng.maxSize)
 		}
 		if currentSize < ng.minSize {
-			klog.V(6).Infof("imported node pools in node group %q are < minSize (current size: %d, max size: %d)",
-				ng.id, currentSize, ng.maxSize)
+			klog.V(2).Infof("imported node pools in node group %q are < minSize (current size: %d, min size: %d, max size: %d)",
+				ng.id, currentSize, ng.minSize, ng.maxSize)
 		}
 	}
 

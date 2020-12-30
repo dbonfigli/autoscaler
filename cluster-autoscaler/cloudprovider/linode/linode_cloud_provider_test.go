@@ -27,6 +27,7 @@ import (
 )
 
 func TestCloudProvider_newLinodeCloudProvider(t *testing.T) {
+	// test ok on correctly creating a linode provider
 	rl := &cloudprovider.ResourceLimiter{}
 	cfg := strings.NewReader(`
 [global]
@@ -36,6 +37,7 @@ lke-cluster-id=456456
 	_, err := newLinodeCloudProvider(cfg, rl)
 	assert.NoError(t, err)
 
+	// test error on creating a linode provider when config is bad
 	cfg = strings.NewReader(`
 [globalxxx]
 linode-token=123123123
@@ -46,6 +48,7 @@ lke-cluster-id=456456
 }
 
 func TestCloudProvider_NodeGroups(t *testing.T) {
+	// test ok on getting the correct nodes when calling NodeGroups()
 	cfg := strings.NewReader(`
 [global]
 linode-token=123123123
@@ -117,6 +120,7 @@ lke-cluster-id=456456
 	}
 	lcp := &linodeCloudProvider{manager: m}
 
+	// test ok on getting the right node group for an apiv1.Node
 	node := &apiv1.Node{
 		Spec: apiv1.NodeSpec{
 			ProviderID: "linode://555",
@@ -126,6 +130,7 @@ lke-cluster-id=456456
 	assert.NoError(t, err)
 	assert.Equal(t, ng1, ng)
 
+	// test ok on getting the right node group for an apiv1.Node
 	node = &apiv1.Node{
 		Spec: apiv1.NodeSpec{
 			ProviderID: "linode://666",
@@ -135,6 +140,7 @@ lke-cluster-id=456456
 	assert.NoError(t, err)
 	assert.Equal(t, ng2, ng)
 
+	// test ok on getting nil when looking for a apiv1.Node we do not manage
 	node = &apiv1.Node{
 		Spec: apiv1.NodeSpec{
 			ProviderID: "linode://999",
@@ -144,6 +150,7 @@ lke-cluster-id=456456
 	assert.NoError(t, err)
 	assert.Nil(t, ng)
 
+	// test error on looking for a apiv1.Node with a bad providerID
 	node = &apiv1.Node{
 		Spec: apiv1.NodeSpec{
 			ProviderID: "linode://aaa",

@@ -149,6 +149,7 @@ spec:
               memory: 300Mi
           command:
             - ./cluster-autoscaler
+            - --v=2
             - --cloud-provider=linode
             - --cloud-config=/config/cloud-config
           volumeMounts:

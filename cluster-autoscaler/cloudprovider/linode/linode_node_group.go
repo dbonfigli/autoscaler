@@ -25,8 +25,8 @@ import (
 	"github.com/linode/linodego"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 	klog "k8s.io/klog/v2"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 const (
@@ -167,7 +167,7 @@ func (n *NodeGroup) Nodes() ([]cloudprovider.Instance, error) {
 	for _, pool := range n.lkePools {
 		linodesCount := len(pool.Linodes)
 		if linodesCount != 1 {
-			klog.V(6).Infof("Number of linodes in LKE pool %d is not exactly 1 (count: %d)", pool.ID, linodesCount)
+			klog.V(2).Infof("Number of linodes in LKE pool %d is not exactly 1 (count: %d)", pool.ID, linodesCount)
 		}
 		for _, linode := range pool.Linodes {
 			instance := cloudprovider.Instance{

@@ -146,15 +146,15 @@ func newLinodeCloudProvider(config io.Reader, rl *cloudprovider.ResourceLimiter)
 
 	err = m.refresh()
 	if err != nil {
-		klog.V(2).Infof("Error on first import of LKE node pools: %v", err)
+		klog.V(1).Infof("Error on first import of LKE node pools: %v", err)
 	}
-	klog.V(2).Infof("First import of existing LKE node pools ended")
+	klog.V(1).Infof("First import of existing LKE node pools ended")
 	if len(m.nodeGroups) == 0 {
-		klog.V(2).Infof("Could not import any LKE node pool in any node group")
+		klog.V(1).Infof("Could not import any LKE node pool in any node group")
 	} else {
-		klog.V(2).Infof("imported LKE node pools:")
+		klog.V(1).Infof("imported LKE node pools:")
 		for _, ng := range m.nodeGroups {
-			klog.V(4).Infof("%s", ng.extendedDebug())
+			klog.V(1).Infof("%s", ng.extendedDebug())
 		}
 	}
 
