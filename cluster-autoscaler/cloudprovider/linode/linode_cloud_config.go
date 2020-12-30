@@ -135,8 +135,8 @@ func buildCloudConfig(config io.Reader) (*linodeConfig, error) {
 	}, nil
 }
 
-// getSizeLimits takes the max, min size of a node group a strings (empty if no values are provided)
-// and default sizes, validate them an return them as integer, or an error if such occurred
+// getSizeLimits takes the max, min size of a node group as strings (empty if no values are provided)
+// and default sizes, validates them an returns them as integer, or an error if such occurred
 func getSizeLimits(minStr string, maxStr string, defaultMin int, defaultMax int) (int, int, error) {
 	var err error
 	min := defaultMin

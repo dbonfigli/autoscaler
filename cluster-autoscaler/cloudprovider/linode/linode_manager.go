@@ -25,10 +25,12 @@ import (
 	klog "k8s.io/klog/v2"
 )
 
+// manager handles Linode communication and holds information about
+// the node groups (LKE pools with a single linode each)
 type manager struct {
 	client     linodeAPIClient
 	config     *linodeConfig
-	nodeGroups map[string]*NodeGroup
+	nodeGroups map[string]*NodeGroup // key: NodeGroup.id
 }
 
 func newManager(config io.Reader) (*manager, error) {

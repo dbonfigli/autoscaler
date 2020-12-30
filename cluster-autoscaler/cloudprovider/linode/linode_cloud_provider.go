@@ -35,6 +35,7 @@ type linodeCloudProvider struct {
 	resourceLimiter *cloudprovider.ResourceLimiter
 }
 
+// Name returns name of the cloud provider.
 func (l *linodeCloudProvider) Name() string {
 	return cloudprovider.LinodeProviderName
 }

@@ -31,7 +31,7 @@ type linodeAPIClient interface {
 	DeleteLKEClusterPool(ctx context.Context, clusterID int, id int) error
 }
 
-// buildLinodeAPIClient returns an interface ready to perform calls to linode API
+// buildLinodeAPIClient returns the struct ready to perform calls to linode API
 func buildLinodeAPIClient(linodeToken string) linodeAPIClient {
 	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: linodeToken})
 	oauth2Client := &http.Client{

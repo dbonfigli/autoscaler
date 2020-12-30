@@ -39,17 +39,18 @@ const (
 //
 // Receivers assume all fields are initialized (i.e. not nil).
 //
-// A node group is composed of multiple LKE pools, each with a single linode in them.
-// We cannot use an LKE pool as node group since LKE does not provide a way to
-// delete a specific linnode in a pool.
+// We cannot use an LKE pool as node group because LKE does not provide a way to
+// delete a specific linode in a pool, but provides an API to selectively delete
+// a LKE pool. To get around this issue, we build a NodeGroup with multiple LKE pools,
+// each with a single linode in them.
 type NodeGroup struct {
 	client       linodeAPIClient
-	lkePools     map[int]*linodego.LKEClusterPool //key: LKEClusterPool.ID
+	lkePools     map[int]*linodego.LKEClusterPool // key: LKEClusterPool.ID
 	poolOpts     linodego.LKEClusterPoolCreateOptions
 	lkeClusterID int
 	minSize      int
 	maxSize      int
-	id           string
+	id           string // this is a LKEClusterPool Type
 }
 
 // MaxSize returns maximum size of the node group.
@@ -216,6 +217,8 @@ func (n *NodeGroup) Autoprovisioned() bool {
 	return false
 }
 
+// addNewLKEPool creates a new LKE Pool with a single linode in it and add it
+// to the pools of this node group
 func (n *NodeGroup) addNewLKEPool() error {
 	ctx := context.Background()
 	newPool, err := n.client.CreateLKEClusterPool(ctx, n.lkeClusterID, n.poolOpts)
@@ -226,6 +229,8 @@ func (n *NodeGroup) addNewLKEPool() error {
 	return nil
 }
 
+// deleteLKEPool deletes a pool given its pool id and remove it from the pools
+// of this node group
 func (n *NodeGroup) deleteLKEPool(id int) error {
 	_, ok := n.lkePools[id]
 	if !ok {
@@ -240,7 +245,7 @@ func (n *NodeGroup) deleteLKEPool(id int) error {
 	return nil
 }
 
-// findLKEPoolForNode return the LKE pool where this node is, nil otherwise
+// findLKEPoolForNode returns the LKE pool where this node is, nil otherwise
 func (n *NodeGroup) findLKEPoolForNode(node *apiv1.Node) (*linodego.LKEClusterPool, error) {
 	providerID := node.Spec.ProviderID
 	instanceIDStr := strings.TrimPrefix(providerID, providerIDPrefix)
