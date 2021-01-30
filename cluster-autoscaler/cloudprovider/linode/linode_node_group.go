@@ -255,6 +255,10 @@ func (n *NodeGroup) deleteLKEPool(id int) error {
 // findLKEPoolForNode returns the LKE pool where this node is, nil otherwise
 func (n *NodeGroup) findLKEPoolForNode(node *apiv1.Node) (*linodego.LKEClusterPool, error) {
 	providerID := node.Spec.ProviderID
+	if providerID == "" {
+		klog.V(2).Infof("Node %v has no providerId, skipping the search for its node group", node.Name)
+		return nil, nil
+	}
 	instanceIDStr := strings.TrimPrefix(providerID, providerIDPrefix)
 	instanceID, err := strconv.Atoi(instanceIDStr)
 	if err != nil {
